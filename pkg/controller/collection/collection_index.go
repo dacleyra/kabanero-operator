@@ -8,5 +8,5 @@ type CollectionV1Index struct {
 	Collections map[string][]IndexedCollectionV1 `yaml:"projects,omitempty"`
 	
 	// V2 Collections
-	CollectionsV2 map[string][]IndexedCollectionV2 `yaml:"stacks,omitempty"`
+	CollectionsV2 []IndexedCollectionV2 `yaml:"stacks,omitempty"`
 }

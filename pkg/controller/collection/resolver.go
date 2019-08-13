@@ -7,10 +7,20 @@ import (
 	"io/ioutil"
 	"net/http"
 	"strings"
+	"regexp"
 )
 
 func ResolveIndex(url string) (*CollectionV1Index, error) {
-	if !strings.HasSuffix(url, "/index.yaml") {
+//	if !strings.HasSuffix(url, "/index.yaml") {
+//		url = url + "/index.yaml"
+//	}
+	
+	// user may specify url to yaml file or directory
+	matched, err := regexp.MatchString(`/([^/]+)[.]yaml$`, url) 
+	if err != nil {
+		return nil, err
+	}
+	if !matched {
 		url = url + "/index.yaml"
 	}
 

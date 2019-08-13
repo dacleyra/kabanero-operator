@@ -2,16 +2,16 @@ package collection
 
 
 // Convenience function which iterates over the complex Collections structure
-func (c *CollectionV1Index) ListCollectionsV2() []IndexedCollectionV2 {
-	all := make([]IndexedCollectionV2, 0)
-	for _, v := range c.CollectionsV2 {
-		for _, colRef := range v {
-			all = append(all, colRef)
-		}
-	}
-
-	return all
-}
+//func (c *CollectionV1Index) ListCollectionsV2() []IndexedCollectionV2 {
+//	all := make([]IndexedCollectionV2, 0)
+//	for _, v := range c.CollectionsV2 {
+//		for _, colRef := range v {
+//			all = append(all, colRef)
+//		}
+//	}
+//
+//	return all
+//}
 
 type IndexedCollectionV2 struct {
 	DefaultDashboard   string                   `yaml:"default-dashboard,omitempty"`
