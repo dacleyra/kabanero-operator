@@ -150,10 +150,21 @@ func findMaxVersionCollection(collections []resolvedCollection) *resolvedCollect
 	log.Info(fmt.Sprintf("findMaxVersionCollection: processing %v collections", len(collections)))
 
 	var maxCollection *resolvedCollection = nil
+	var err error = nil
 	maxVersion, _ := semver.Make("0.0.0")
+	curVersion, _ := semver.Make("0.0.0")
 
 	for i, _ := range collections {
-		curVersion, err := semver.ParseTolerant(collections[i].collection.Manifest.Version)
+		
+		switch {
+		//v1
+		case collections[i].collection.Manifest.Version != "":
+			curVersion, err = semver.ParseTolerant(collections[i].collection.Manifest.Version)
+		//v2
+		case collections[i].collectionv2.Version != "":
+			curVersion, err = semver.ParseTolerant(collections[i].collectionv2.Version)
+		}
+
 		if err == nil {
 			if curVersion.Compare(maxVersion) > 0 {
 				maxCollection = &collections[i]
@@ -171,8 +182,11 @@ func findMaxVersionCollection(collections []resolvedCollection) *resolvedCollect
 
 // Used internally by ReconcileCollection to store matching collections
 type resolvedCollection struct {
+	//v1
 	collection CollectionV1
 	repositoryUrl string
+	//v2
+	collectionv2 IndexedCollectionV2
 }
 
 func (r *ReconcileCollection) ReconcileCollection(c *kabanerov1alpha1.Collection, k *kabanerov1alpha1.Kabanero) (reconcile.Result, error) {
@@ -203,19 +217,37 @@ func (r *ReconcileCollection) ReconcileCollection(c *kabanerov1alpha1.Collection
 	for _, repo := range repositories {
 		index, err := r.indexResolver(repo.Url)
 		if err != nil {
-			// TODO: Issue #92, should just search the repository where the colleciton was loaded initially.
+			// TODO: Issue #92, should just search the repository where the collection was loaded initially.
 			return reconcile.Result{Requeue: true, RequeueAfter: 60 * time.Second}, err
 		}
 
-		// Search for all versions of the collection in this repository index.
-		_collections, err := SearchCollection(collectionName, index)
-		if err != nil {
-			r_log.Error(err, "Could not search the provided index")
-		}
+		// Handle Index Collection version
+		switch apiVersion := index.ApiVersion; apiVersion {
+		case "v1":
+			// Search for all versions of the collection in this repository index.
+			_collections, err := SearchCollection(collectionName, index)
+			if err != nil {
+				r_log.Error(err, "Could not search the provided index")
+			}
 
-		// Build out the list of all collections across all repository indexes
-		for _, collection := range _collections {
-			matchingCollections = append(matchingCollections, resolvedCollection{collection: collection, repositoryUrl: repo.Url})
+			// Build out the list of all collections across all repository indexes
+			for _, collection := range _collections {
+				matchingCollections = append(matchingCollections, resolvedCollection{collection: collection, repositoryUrl: repo.Url})
+			}
+		case "v2":
+			// Search for all versions of the collection in this repository index.
+			_collections, err := SearchCollectionV2(collectionName, index)
+			if err != nil {
+				r_log.Error(err, "Could not search the provided index")
+			}
+			
+			// Build out the list of all collections across all repository indexes
+			for _, collection := range _collections {
+				matchingCollections = append(matchingCollections, resolvedCollection{collectionv2: collection})
+			}
+
+		default: 
+			fmt.Sprintf("Index is unsupported version: %s", apiVersion)
 		}
 	}
 
@@ -252,6 +284,7 @@ func (r *ReconcileCollection) ReconcileCollection(c *kabanerov1alpha1.Collection
 		// Search for the correct version.  The list may have duplicates, we're just searching for
 		// the first match.
 		for _, matchingCollection := range matchingCollections {
+			//TODO: handle v1 & v2
 			if matchingCollection.collection.Manifest.Version == c.Spec.Version {
 				err := activate(c, &matchingCollection.collection, r.client)
 				if err != nil {
