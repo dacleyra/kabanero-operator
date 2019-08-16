@@ -50,3 +50,12 @@ type IndexedTemplatesV2 struct {
 	Id                 string                   `yaml:"id,omitempty"`
 	Url                string                   `yaml:"url,omitempty"`
 }
+
+type PipelineManifestV2 struct {
+	Contents           []PipelineFilesV2        `yaml:"contents,omitempty"`
+}
+
+type PipelineFilesV2 struct {
+	File               string                   `yaml:"file,omitempty"`
+	Sha256             string                   `yaml:"sha256,omitempty"`
+}
