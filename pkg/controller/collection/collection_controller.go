@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
+//	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 var log = logf.Log.WithName("controller_collection")
@@ -589,10 +590,18 @@ func activatev2(collectionResource *kabanerov1alpha1.Collection, collection *Ind
 		if applyAsset {
 			log.Info(fmt.Sprintf("Applying asset %v", asset.Url))
 
-			m, err := mf.NewManifest(asset.Url, false, c)
+			manifests, err := GetManifests(asset.Url)
 			if err != nil {
 				return err
 			}
+			
+			//This isn't working, can't generate a new empty Manifest properly
+			m, err := mf.NewManifest("/dev/null", false, c)
+			if err != nil {
+				log.Info(fmt.Sprintf("Could not use dummy /dev/null"))
+				return err
+			}
+			m.Resources = manifests
 
 			log.Info(fmt.Sprintf("Resources: %v", m.Resources))
 
