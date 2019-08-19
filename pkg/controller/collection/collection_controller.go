@@ -18,7 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
-//	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 var log = logf.Log.WithName("controller_collection")
@@ -512,6 +512,17 @@ func activate(collectionResource *kabanerov1alpha1.Collection, collection *Colle
 
 
 
+// Create a Manifest from unstructured, rather than path/url
+type Manifest struct {
+	mf.Manifest
+	Resources []unstructured.Unstructured
+	client    client.Client
+}
+
+func NewManifest(resources []unstructured.Unstructured, client client.Client) (Manifest, error) {
+	return Manifest{Resources: resources, client: client}, nil
+}
+
 
 func activatev2(collectionResource *kabanerov1alpha1.Collection, collection *IndexedCollectionV2, c client.Client) error {
 
@@ -521,6 +532,7 @@ func activatev2(collectionResource *kabanerov1alpha1.Collection, collection *Ind
 		// Our version change strategy is going to be as follows:
 		// 1) Attempt to load all of the known artifacts.  Any failure, status message and punt.
 		// 2) Delete the artifacts.  If something goes wrong here, the state of the collection is unknown.
+		
 		type transformedRemoteManifest struct {
 			m mf.Manifest
 			assetUrl string
@@ -595,13 +607,10 @@ func activatev2(collectionResource *kabanerov1alpha1.Collection, collection *Ind
 				return err
 			}
 			
-			//This isn't working, can't generate a new empty Manifest properly
-			m, err := mf.NewManifest("/dev/null", false, c)
+			m, err := NewManifest(manifests, c)
 			if err != nil {
-				log.Info(fmt.Sprintf("Could not use dummy /dev/null"))
 				return err
 			}
-			m.Resources = manifests
 
 			log.Info(fmt.Sprintf("Resources: %v", m.Resources))
 
@@ -614,6 +623,8 @@ func activatev2(collectionResource *kabanerov1alpha1.Collection, collection *Ind
 			if err != nil {
 				return err
 			}
+			
+			log.Info(fmt.Sprintf("Transformed Resources: %v", m.Resources))
 
 			err = m.ApplyAll()
 			if err != nil {
@@ -624,6 +635,7 @@ func activatev2(collectionResource *kabanerov1alpha1.Collection, collection *Ind
 				// Update the digest for this asset in the status
 				updateAssetStatusv2(&collectionResource.Status, asset, "")
 			}
+
 		}
 	}
 
