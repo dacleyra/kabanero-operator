@@ -2,10 +2,12 @@
 # Override in order to customize
 IMAGE ?= kabanero-operator:latest
 REGISTRY_IMAGE ?= kabanero-operator-registry:latest
+WEBHOOK_IMAGE ?= kabanero-operator-admission-webhook:latest
 
 # Computed repository name (no tag) including repository host/path reference
 REPOSITORY=$(firstword $(subst :, ,${IMAGE}))
 REGISTRY_REPOSITORY=$(firstword $(subst :, ,${REGISTRY_IMAGE}))
+WEBHOOK_REPOSITORY=$(firstword $(subst :, ,${WEBHOOK_IMAGE}))
 
 # Current release (used for CSV management)
 CURRENT_RELEASE=0.4.0
@@ -15,16 +17,19 @@ CURRENT_RELEASE=0.4.0
 # Example case:
 # export IMAGE=default-route-openshift-image-registry.apps.CLUSTER.example.com/kabanero/kabanero-operator:latest
 # export REGISTRY_IMAGE=default-route-openshift-image-registry.apps.CLUSTER.example.com/openshift-marketplace/kabanero-operator-registry:latest
+# export WEBHOOK_IMAGE=
 # export INTERNAL_IMAGE=image-registry.openshift-image-registry.svc:5000/kabanero/kabanero-operator:latest
 # export INTERNAL_REGISTRY_IMAGE=image-registry.openshift-image-registry.svc:5000/openshift-marketplace/kabanero-operator-registry:latest
+# export INTERNAL_WEBHOOK_IMAGE=
 INTERNAL_IMAGE ?=
 INTERNAL_REGISTRY_IMAGE ?=
-
+INTERNAL_WEBHOOK_IMAGE ?=
 
 .PHONY: build deploy deploy-olm build-image push-image int-test-install int-test-collections int-test-uninstall
 
 build: generate
 	go install ./cmd/manager
+	go install ./cmd/admission-webhook
 
 build-image: generate
   # These commands were taken from operator-sdk 0.8.1.  The sdk did not let us
@@ -32,9 +37,15 @@ build-image: generate
   # commands separately here.
   # operator-sdk build ${IMAGE}
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/_output/bin/kabanero-operator -gcflags "all=-trimpath=$(GOPATH)" -asmflags "all=-trimpath=$(GOPATH)" -ldflags "-X main.GitTag=$(TRAVIS_TAG) -X main.GitCommit=$(TRAVIS_COMMIT) -X main.GitRepoSlug=$(TRAVIS_REPO_SLUG) -X main.BuildDate=`date -u +%Y%m%d.%H%M%S`" github.com/kabanero-io/kabanero-operator/cmd/manager
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o build/_output/bin/admission-webhook -gcflags "all=-trimpath=$(GOPATH)" -asmflags "all=-trimpath=$(GOPATH)" -ldflags "-X main.GitTag=$(TRAVIS_TAG) -X main.GitCommit=$(TRAVIS_COMMIT) -X main.GitRepoSlug=$(TRAVIS_REPO_SLUG) -X main.BuildDate=`date -u +%Y%m%d.%H%M%S`" github.com/kabanero-io/kabanero-operator/cmd/admission-webhook
+
 	docker build -f build/Dockerfile -t ${IMAGE} .
   # This is a workaround until manfistival can interact with the virtual file system
 	docker build -t ${IMAGE} --build-arg IMAGE=${IMAGE} .
+
+  # Build the admission webhook.
+	docker build -f build/Dockerfile-webhook -t ${WEBHOOK_IMAGE} .
+
   # Build an OLM private registry for Kabanero
 	mkdir -p build/registry
 	cp LICENSE build/registry/LICENSE
@@ -71,11 +82,14 @@ ifneq "$(IMAGE)" "kabanero-operator:latest"
 	kubectl create namespace kabanero || true
 	docker push $(IMAGE)
 	docker push $(REGISTRY_IMAGE)
+	docker push $(WEBHOOK_IMAGE)
 
 ifdef TRAVIS_TAG
   # This is a Travis tag build. Pushing using Docker tag TRAVIS_TAG
 	docker tag $(IMAGE) $(REPOSITORY):$(TRAVIS_TAG)
 	docker push $(REPOSITORY):$(TRAVIS_TAG)
+	docker tag $(WEBHOOK_IMAGE) $(WEBHOOK_REPOSITORY):$(TRAVIS_TAG)
+	docker push $(WEBHOOK_REPOSITORY):$(TRAVIS_TAG)
 	docker push $(REGISTRY_REPOSITORY):$(TRAVIS_TAG)
 endif
 
@@ -83,6 +97,8 @@ ifdef TRAVIS_BRANCH
   # This is a Travis branch build. Pushing using Docker tag TRAVIS_BRANCH
 	docker tag $(IMAGE) $(REPOSITORY):$(TRAVIS_BRANCH)
 	docker push $(REPOSITORY):$(TRAVIS_BRANCH)
+	docker tag $(WEBHOOK_IMAGE) $(WEBHOOK_REPOSITORY):$(TRAVIS_TAG)
+	docker push $(WEBHOOK_REPOSITORY):$(TRAVIS_BRANCH)
 	docker push $(REGISTRY_REPOSITORY):$(TRAVIS_BRANCH)
 endif
 endif
@@ -168,7 +184,13 @@ else
 endif
 
 	KABANERO_SUBSCRIPTIONS_YAML=/tmp/kabanero-subscriptions.yaml KABANERO_CUSTOMRESOURCES_YAML=deploy/kabanero-customresources.yaml deploy/install.sh
-	kubectl apply -f config/samples/default.yaml
+	
+ifdef INTERNAL_WEBHOOK_IMAGE
+# Deployment uses internal registry service address
+	sed -e "s!image: kabanero/kabanero-operator-admission-webhook:.*!image: ${INTERNAL_WEBHOOK_IMAGE}!" config/samples/full.yaml | kubectl apply -f -
+else
+	kubectl apply -f config/samples/full.yaml
+endif
 
 # Uninstall Test
 int-test-uninstall: creds int-uninstall
