@@ -2,7 +2,7 @@
 
 set -Eeox pipefail
 
-RELEASE="${RELEASE:-0.6.0}"
+RELEASE="${RELEASE:-0.6.0-rc.5}"
 KABANERO_SUBSCRIPTIONS_YAML="${KABANERO_SUBSCRIPTIONS_YAML:-https://github.com/kabanero-io/kabanero-operator/releases/download/$RELEASE/kabanero-subscriptions.yaml}"
 KABANERO_CUSTOMRESOURCES_YAML="${KABANERO_CUSTOMRESOURCES_YAML:-https://github.com/kabanero-io/kabanero-operator/releases/download/$RELEASE/kabanero-customresources.yaml}"
 SLEEP_LONG="${SLEEP_LONG:-5}"
@@ -49,73 +49,80 @@ fi
 # Check to see if we're upgrading, and if so, that we're at N-1 or N.
 if [ `oc get subscription kabanero-operator -n kabanero --no-headers --ignore-not-found | wc -l` -gt 0 ] ; then
 		CSV=$(oc get subscription kabanero-operator -n kabanero --output=jsonpath={.status.installedCSV})
-    if ! [[ "$CSV" =~ ^kabanero-operator\.v0\.[56]\..* ]]; then
+    if ! [[ "$CSV" =~ ^kabanero-operator\.v0\.[3456]\..* ]]; then
         printf "Cannot upgrade kabanero-operator CSV version $CSV to $RELEASE.  Upgrade is supported from the previous minor release."
         exit 1
     fi
 fi
 
-# Check Subscriptions: subscription-name, namespace
+# Check phase helper
+check_succeeded() {
+    [[ "${*}" =~ ^(Succeeded )*Succeeded$ ]]
+    return
+}
+
+# Check Subscriptions: subscription-name, namespace, existing-csv
 checksub () {
-	echo "Waiting for Subscription $1 InstallPlan to complete."
+	echo "Waiting for Subscription $1 to resolve to status.state: AtLatestKnown and CSVs status.state: Succeeded."
 
-	# Wait 2 resync periods for OLM to emit new installplan
+	# Wait 2 resync periods for OLM
 	sleep 60
+	unset CSVSUCCEEDED
+	unset ATLATESTKNOWN
 
-	# Wait for the InstallPlan to be generated and available on status
-	unset INSTALL_PLAN
-	until oc get subscription $1 -n $2 --output=jsonpath={.status.installPlanRef.name}
-	do
-		sleep $SLEEP_SHORT
-	done
+	until [ "$ATLATESTKNOWN" == "true" ] && [ "$CSVSUCCEEDED" == "true" ]; do
 
-	# Get the InstallPlan
-	until [ -n "$INSTALL_PLAN" ]
-	do
-		sleep $SLEEP_SHORT
-		INSTALL_PLAN=$(oc get subscription $1 -n $2 --output=jsonpath={.status.installPlanRef.name})
-	done
+		# Get the InstallPlan
+		unset INSTALL_PLAN
+		until [ -n "$INSTALL_PLAN" ] ; do
+			sleep $SLEEP_SHORT
+			INSTALL_PLAN=$(oc get subscription $1 -n $2 --output=jsonpath={.status.installPlanRef.name})
+		done
 
-	# Wait for the InstallPlan to Complete
-	unset PHASE
-	until [ "$PHASE" == "Complete" ]
-	do
-		PHASE=$(oc get installplan $INSTALL_PLAN -n $2 --output=jsonpath={.status.phase})
-    if [ "$PHASE" == "Failed" ]; then
-      set +x
-      sleep 3
-      echo "InstallPlan $INSTALL_PLAN for subscription $1 failed."
-      echo "To investigate the reason of the InstallPlan failure run:"
-      echo "oc describe installplan $INSTALL_PLAN -n $2"
-      exit 1
-    fi
-		sleep $SLEEP_SHORT
-	done
-	
-	# Get installed CluserServiceVersion
-	unset CSV
-	until [ -n "$CSV" ]
-	do
-		sleep $SLEEP_SHORT
-		CSV=$(oc get subscription $1 -n $2 --output=jsonpath={.status.installedCSV})
-	done
-	
-	# Wait for the CSV
-	unset PHASE
-	until [ "$PHASE" == "Succeeded" ]
-	do
-		PHASE=$(oc get clusterserviceversion $CSV -n $2 --output=jsonpath={.status.phase})
-    if [ "$PHASE" == "Failed" ]; then
-      set +x
-      sleep 3
-      echo "ClusterServiceVersion $CSV for subscription $1 failed."
-      echo "To investigate the reason of the ClusterServiceVersion failure run:"
-      echo "oc describe clusterserviceversion $CSV -n $2"
-      exit 1
-    fi
-		sleep $SLEEP_SHORT
+		# Wait for the InstallPlan to Complete
+		unset PHASE
+		until [ "$PHASE" == "Complete" ] ; do
+			PHASE=$(oc get installplan $INSTALL_PLAN -n $2 --output=jsonpath={.status.phase})
+			if [ "$PHASE" == "Failed" ]; then
+				set +x
+				sleep 3
+				echo "InstallPlan $INSTALL_PLAN for subscription $1 failed."
+				echo "To investigate the reason of the InstallPlan failure run:"
+				echo "oc describe installplan $INSTALL_PLAN -n $2"
+				exit 1
+			fi
+			sleep $SLEEP_SHORT
+		done
+		
+		# Get installed ClusterServiceVersion
+		unset CSV
+		until [ -n "$CSV" ] ; do
+			sleep $SLEEP_SHORT
+			CSV=$(oc get subscription $1 -n $2 --output=jsonpath={.status.installedCSV})
+		done
+		
+		# Wait for the CSV
+		# If the primary CSV has failed, find other CSV versions and delete them
+		if [ "$(oc get clusterserviceversion $CSV -n $2 --output=jsonpath={.status.phase})" == "Failed" ]; then
+			DELCSVS=$(oc --all-namespaces=true get csv --output=jsonpath='{range .items[*]}{"\n"}{@.metadata.name}{end}' | grep ${CSV%%.*} | grep -v -x ${CSV} | awk '!x[$0]++')
+			for DELCSV in ${DELCSVS[@]} ; do
+				oc --all-namespaces=true delete csv --field-selector=metadata.name="${DELCSV}" --ignore-not-found=true
+			done
+		fi
+
+		sleep 60
+
+		if check_succeeded $(oc --all-namespaces=true get csv --field-selector=metadata.name=$CSV -o=jsonpath={.items[*].status.phase}) ; then
+			CSVSUCCEEDED=true
+		fi
+		
+		if [ "$(oc get subscription $1 -n $2 --output=jsonpath={.status.state})" == "AtLatestKnown" ] ; then
+			ATLATESTKNOWN=true
+		fi
+		
 	done
 }
+
 
 # Removes a resource instance in the specified namespace.
 removeResourceInstance() {
@@ -225,7 +232,7 @@ do
 done
 
 
-### Subscriptions
+### Subscriptions: Install or Upgrade
 
 # Install 10-subscription (elasticsearch, jaeger, kiali)
 oc apply -f $KABANERO_SUBSCRIPTIONS_YAML --selector kabanero.io/install=10-subscription
@@ -235,11 +242,13 @@ checksub elasticsearch-operator openshift-operators
 checksub jaeger-product openshift-operators
 checksub kiali-ossm openshift-operators
 
+
 # Install 11-subscription (servicemesh)
 oc apply -f $KABANERO_SUBSCRIPTIONS_YAML --selector kabanero.io/install=11-subscription
 
 # Verify Subscriptions
 checksub servicemeshoperator openshift-operators
+
 
 # Install 12-subscription (serving)
 oc apply -f $KABANERO_SUBSCRIPTIONS_YAML --selector kabanero.io/install=12-subscription
@@ -247,13 +256,16 @@ oc apply -f $KABANERO_SUBSCRIPTIONS_YAML --selector kabanero.io/install=12-subsc
 # Verify Subscriptions
 checksub serverless-operator openshift-operators
 
+
 # Install 13-subscription (pipelines, appsody, openliberty)
 oc apply -f $KABANERO_SUBSCRIPTIONS_YAML --selector kabanero.io/install=13-subscription
 
 # Verify Subscriptions
 checksub openshift-pipelines openshift-operators
 checksub appsody-operator-certified openshift-operators
-checksub open-liberty-certified openshift-operators
+#checksub open-liberty-certified openshift-operators
+
+
 
 # Install 14-subscription (codeready-workspaces, kabanero)
 
@@ -276,8 +288,10 @@ oc adm policy add-scc-to-user privileged system:serviceaccount:kabanero:che-work
 oc apply -f $KABANERO_SUBSCRIPTIONS_YAML --selector kabanero.io/install=14-subscription
 
 # Verify Subscriptions
-checksub codeready-workspaces kabanero 
+checksub codeready-workspaces kabanero
 checksub kabanero-operator kabanero
+
+
 
 ### CustomResources
 
